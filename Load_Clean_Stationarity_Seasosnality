@@ -1,0 +1,99 @@
+needed_pkgs <- c("tseries", "forecast")
+to_install  <- setdiff(needed_pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, dependencies = TRUE)
+
+suppressPackageStartupMessages({
+  library(tseries)
+  library(forecast)
+})
+
+
+open_device <- function(title = "Plot", w = 9, h = 6) {
+  if (.Platform$OS.type == "windows") {
+    tryCatch(windows(width = w, height = h, record = TRUE, title = title),
+             error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+  } else {
+    sys <- tryCatch(Sys.info()[["sysname"]], error = function(e) "")
+    if (identical(sys, "Darwin")) {
+      tryCatch(quartz(width = w, height = h, title = title),
+               error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+    } else {
+      tryCatch(x11(width = w, height = h),
+               error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+    }
+  }
+  invisible(TRUE)
+}
+
+
+
+#load & clean the dataset
+file_path <- "C:/Users/Tariq/Desktop/coin_Bitcoin.csv"
+stopifnot(file.exists(file_path))
+
+crypto <- read.csv(file_path, stringsAsFactors = FALSE)
+stopifnot(all(c("Date","Close") %in% names(crypto)))
+crypto <- crypto[, c("Date","Close")]
+crypto$Date  <- as.Date(crypto$Date)
+crypto$Close <- as.numeric(crypto$Close)
+crypto       <- crypto[order(crypto$Date), ]
+
+cat("Rows:", nrow(crypto),
+    "\nDate range:", min(crypto$Date), "to", max(crypto$Date),
+    "\nNA in Close:", sum(is.na(crypto$Close)), "\n")
+
+
+#time plots
+btc_ts  <- ts(crypto$Close, frequency = 1)
+btc_log <- ts(log(as.numeric(btc_ts)), frequency = frequency(btc_ts))
+
+open_device("Bitcoin Close")
+plot(btc_ts, main="Bitcoin Close", xlab="Time", ylab="Price")
+
+open_device("Log - Price")
+plot(btc_log, main="Log - Price", xlab="Time", ylab="log Price")
+
+
+
+#Stationarity checks & transformation
+cat("\n--- Stationarity tests (Level & Log) ---\n")
+print(adf.test(na.omit(btc_ts)))      # ADF H0: non-stationary
+print(kpss.test(na.omit(btc_ts)))     # KPSS H0: stationary
+print(adf.test(na.omit(btc_log)))
+print(kpss.test(na.omit(btc_log)))
+
+
+# Make stationary: Δ log(price) ≈ log returns
+btc_logret <- diff(btc_log)
+
+open_device("ΔLog(Price) - Stationary series")
+plot(btc_logret, main="ΔLog(Price) - Stationary series", xlab="Time", ylab="Δlog Price")
+
+cat("\nStationarity tests (ΔLog Price)\n")
+print(adf.test(na.omit(btc_logret)))   # expect p < 0.05
+print(kpss.test(na.omit(btc_logret)))  # expect p > 0.05
+
+
+# Seasonality detection on the stationary series
+open_device("ACF: Stationary Series")
+acf_stationary <- acf(na.omit(btc_logret), lag.max = 200, main = "ACF: ΔLog(Price) - Seasonality check")
+
+
+#check
+y_stationary <- na.omit(btc_logret)
+acf_vals <- as.numeric(acf_stationary$acf)[-1]
+lags     <- seq_along(acf_vals)
+ci_band  <- 1.96 / sqrt(length(y_stationary))
+sig_lags <- lags[abs(acf_vals) > ci_band]
+cand_lags <- c(7, 14, 21, 28, 30, 60, 90)
+hits <- intersect(sig_lags, cand_lags)
+
+cat("\nSeasonality decision after stationarity\n")
+cat("Significant ACF lags:", if (length(sig_lags)) paste(sig_lags, collapse=", ") else "None", "\n")
+cat("Candidate seasonal lags hit (7/14/28/30/...): ",
+    if (length(hits)) paste(hits, collapse=", ") else "None", "\n")
+if (length(hits)) {
+  cat("Conclusion: Seasonal structure plausible at listed lag(s), would use SARIMA for such data.\n")
+} else {
+  cat("Conclusion: No clear seasonal spikes, treat as Nonseasonal.\n")
+}
