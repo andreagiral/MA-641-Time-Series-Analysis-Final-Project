@@ -1,0 +1,39 @@
+#ARIMA on LOG PRICE - forecast level prices
+
+
+# Use differenced log series for identification; fit ARIMA(p,1,q) on log price.
+btc_log_diff <- diff(btc_log)
+
+open_device("ACF: ΔLog(Price) for ARIMA");  acf(na.omit(btc_log_diff), 40, main="ACF: ΔLog(Price)")
+open_device("PACF: ΔLog(Price) for ARIMA"); pacf(na.omit(btc_log_diff), 40, main="PACF: ΔLog(Price)")
+
+# Candidate ARIMA(p,1,q)
+fit_arima_110 <- arima(btc_log, order=c(1,1,0))
+fit_arima_011 <- arima(btc_log, order=c(0,1,1))
+fit_arima_111 <- arima(btc_log, order=c(1,1,1))
+
+aic_tbl <- data.frame(
+  Model = c("ARIMA(1,1,0)", "ARIMA(0,1,1)", "ARIMA(1,1,1)"),
+  AIC   = c(AIC(fit_arima_110), AIC(fit_arima_011), AIC(fit_arima_111)),
+  BIC   = c(BIC(fit_arima_110), BIC(fit_arima_011), BIC(fit_arima_111))
+)
+cat("\nARIMA AIC/BIC\n"); print(aic_tbl[order(aic_tbl$AIC), ])
+
+# Residual adequacy
+open_device("tsdiag ARIMA(1,1,0)"); tsdiag(fit_arima_110, gof.lag=20)
+open_device("tsdiag ARIMA(0,1,1)"); tsdiag(fit_arima_011, gof.lag=20)
+open_device("tsdiag ARIMA(1,1,1)"); tsdiag(fit_arima_111, gof.lag=20)
+
+# Choose the best ARIMA by AIC among the three and forecast
+best_idx <- which.min(aic_tbl$AIC)
+final_fit <- list(fit_arima_110, fit_arima_011, fit_arima_111)[[best_idx]]
+
+h <- 30
+fc <- forecast(final_fit, h = h)
+
+open_device(sprintf("ARIMA Forecast (%d days ahead)", h))
+plot(fc, main=sprintf("ARIMA Forecast (%d days ahead)", h))
+
+# Back transform to PRICE scale
+fc_price <- exp(fc$mean)
+cat("\nFirst 10 forecasted PRICES:\n"); print(head(fc_price, 10))
