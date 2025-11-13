@@ -1,0 +1,364 @@
+needed_pkgs <- c("tseries", "forecast", "moments")
+to_install  <- setdiff(needed_pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, dependencies = TRUE)
+
+suppressPackageStartupMessages({
+  library(tseries)
+  library(forecast)
+  library(moments)
+})
+
+open_device <- function(title = "Plot", w = 9, h = 6) {
+  if (.Platform$OS.type == "windows") {
+    tryCatch(windows(width = w, height = h, record = TRUE, title = title),
+             error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+  } else {
+    sys <- tryCatch(Sys.info()[["sysname"]], error = function(e) "")
+    if (identical(sys, "Darwin")) {
+      tryCatch(quartz(width = w, height = h, title = title),
+               error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+    } else {
+      tryCatch(x11(width = w, height = h),
+               error = function(e) dev.new(width = w, height = h, noRStudioGD = TRUE))
+    }
+  }
+  invisible(TRUE)
+}
+
+# helper for Month–Year axis for Date
+axis_month_year <- function(dates, by = "6 months", las = 2, cex = 0.8) {
+  ticks <- seq(min(dates), max(dates), by = by)
+  axis(1, at = ticks, labels = format(ticks, "%b %Y"), las = las, cex.axis = cex)
+}
+
+plot_date_series <- function(dates, y, main, ylab, col = "black") {
+  plot(dates, y, type = "l", xlab = "Date", ylab = ylab,
+       main = main, col = col, xaxt = "n")
+  axis_month_year(dates)
+}
+
+
+
+
+# ---- By Tariq
+#load & clean the dataset
+file_path <- "C:/Users/Tariq/Desktop/coin_Bitcoin.csv"
+stopifnot(file.exists(file_path))
+
+crypto <- read.csv(file_path, stringsAsFactors = FALSE)
+stopifnot(all(c("Date","Close") %in% names(crypto)))
+crypto <- crypto[, c("Date","Close")]
+crypto$Date  <- as.Date(crypto$Date)
+crypto$Close <- as.numeric(crypto$Close)
+crypto       <- crypto[order(crypto$Date), ]
+
+cat("Rows:", nrow(crypto),
+    "\nDate range:", min(crypto$Date), "to", max(crypto$Date),
+    "\nNA in Close:", sum(is.na(crypto$Close)), "\n")
+
+price_vec      <- crypto$Close
+logp_vec       <- log(price_vec)
+logret_vec     <- diff(logp_vec)
+
+btc_ts         <- ts(price_vec, frequency = 1)
+btc_log_ts     <- ts(logp_vec,  frequency = frequency(btc_ts))
+btc_logret_ts  <- ts(logret_vec, frequency = frequency(btc_ts))
+
+open_device("Bitcoin Close")
+plot_date_series(crypto$Date, price_vec, "Bitcoin Close", "Price")
+
+open_device("Log - Price")
+plot_date_series(crypto$Date, logp_vec, "Log - Price", "log(Price)")
+
+open_device("Log(Price) - Stationary series")
+plot_date_series(crypto$Date[-1], logret_vec, "Log(Price) - Stationary series", "log(Price)")
+
+
+
+
+
+# ---- By Tariq
+#Stationarity checks & transformation
+cat("\n--- Stationarity tests (Level & Log) ---\n")
+print(adf.test(na.omit(btc_ts)))          # ADF H0: non-stationary
+print(kpss.test(na.omit(btc_ts)))         # KPSS H0: stationary
+print(adf.test(na.omit(btc_log_ts)))      
+print(kpss.test(na.omit(btc_log_ts)))     
+
+
+
+#Make stationary: log(price) ≈ log returns
+btc_logret <- diff(btc_log_ts)        
+
+open_device("Log(Price) - Stationary series")
+plot(btc_logret, main="Log(Price) - Stationary series", xlab="Time", ylab="Δlog Price")
+
+cat("\nStationarity tests (Log Price)\n")
+print(adf.test(na.omit(btc_logret)))
+print(kpss.test(na.omit(btc_logret)))
+
+
+
+
+#Seasonality detection on the stationary series
+open_device("ACF: Stationary Series")
+acf_stationary <- acf(na.omit(btc_logret), lag.max = 200, main = "ACF: Log(Price) - Seasonality check")
+
+y_stationary <- na.omit(btc_logret)
+acf_vals <- as.numeric(acf_stationary$acf)[-1]
+lags     <- seq_along(acf_vals)
+ci_band  <- 1.96 / sqrt(length(y_stationary))
+sig_lags <- lags[abs(acf_vals) > ci_band]
+cand_lags <- c(7, 14, 21, 28, 30, 60, 90)
+hits <- intersect(sig_lags, cand_lags)
+
+cat("\nSeasonality decision after stationarity\n")
+cat("Significant ACF lags:", if (length(sig_lags)) paste(sig_lags, collapse=", ") else "None", "\n")
+cat("Candidate seasonal lags hit (7/14/28/30/...): ",
+    if (length(hits)) paste(hits, collapse=", ") else "None", "\n")
+if (length(hits)) {
+  cat("Conclusion: Seasonal structure plausible at listed lag(s), would use SARIMA for such data.\n")
+} else {
+  cat("Conclusion: No clear seasonal spikes, treat as Nonseasonal.\n")
+}
+
+
+
+
+
+# -- By Jeff
+#AR/MA/ARMA MODELING ON BITCOIN RETURNS
+btc_log_returns <- diff(btc_log_ts)
+
+# ACF/PACF for model identification
+open_device("ACF: Bitcoin Log Returns");  
+acf(na.omit(btc_log_returns), 40, main="ACF: Bitcoin Log Returns")
+open_device("PACF: Bitcoin Log Returns"); 
+pacf(na.omit(btc_log_returns), 40, main="PACF: Bitcoin Log Returns")
+
+# Fit AR model on log returns
+fit_ar1 <- arima(btc_log_returns, order=c(1,0,0))
+fit_ar2 <- arima(btc_log_returns, order=c(2,0,0))
+
+# Fit MA model on log returns  
+fit_ma1 <- arima(btc_log_returns, order=c(0,0,1))
+fit_ma2 <- arima(btc_log_returns, order=c(0,0,2))
+
+# Fit ARMA model on log returns
+fit_arma11 <- arima(btc_log_returns, order=c(1,0,1))
+fit_arma12 <- arima(btc_log_returns, order=c(1,0,2))
+fit_arma21 <- arima(btc_log_returns, order=c(2,0,1))
+
+# Model comparison table
+model_comparison <- data.frame(
+  Model = c("AR(1)", "AR(2)", "MA(1)", "MA(2)", "ARMA(1,1)", "ARMA(1,2)", "ARMA(2,1)"),
+  AIC = c(AIC(fit_ar1), AIC(fit_ar2), AIC(fit_ma1), AIC(fit_ma2), 
+          AIC(fit_arma11), AIC(fit_arma12), AIC(fit_arma21)),
+  BIC = c(BIC(fit_ar1), BIC(fit_ar2), BIC(fit_ma1), BIC(fit_ma2),
+          BIC(fit_arma11), BIC(fit_arma12), BIC(fit_arma21))
+)
+
+cat("\nAR/MA/ARMA MODEL COMPARISON\n")
+print(model_comparison[order(model_comparison$AIC), ])
+
+
+
+
+
+# --- By Tariq
+#ARIMA on LOG PRICE - forecast level prices
+btc_log_diff <- diff(btc_log_ts)
+
+open_device("ACF: Log(Price) for ARIMA");  acf(na.omit(btc_log_diff), 40, main="ACF: Log(Price)")
+open_device("PACF: Log(Price) for ARIMA"); pacf(na.omit(btc_log_diff), 40, main="PACF: Log(Price)")
+
+# Candidate ARIMA(p,1,q)
+fit_arima_110 <- arima(btc_log_ts, order=c(1,1,0))  
+fit_arima_011 <- arima(btc_log_ts, order=c(0,1,1))  
+fit_arima_111 <- arima(btc_log_ts, order=c(1,1,1))  
+
+aic_tbl <- data.frame(
+  Model = c("ARIMA(1,1,0)", "ARIMA(0,1,1)", "ARIMA(1,1,1)"),
+  AIC   = c(AIC(fit_arima_110), AIC(fit_arima_011), AIC(fit_arima_111)),
+  BIC   = c(BIC(fit_arima_110), BIC(fit_arima_011), BIC(fit_arima_111))
+)
+cat("\nARIMA AIC/BIC\n"); print(aic_tbl[order(aic_tbl$AIC), ])
+
+# Residual adequacy
+open_device("tsdiag ARIMA(1,1,0)"); tsdiag(fit_arima_110, gof.lag=20)
+open_device("tsdiag ARIMA(0,1,1)"); tsdiag(fit_arima_011, gof.lag=20)
+open_device("tsdiag ARIMA(1,1,1)"); tsdiag(fit_arima_111, gof.lag=20)
+
+# Choose the best ARIMA by AIC among the three and forecast
+best_idx <- which.min(aic_tbl$AIC)
+final_fit <- list(fit_arima_110, fit_arima_011, fit_arima_111)[[best_idx]]
+
+h <- 30
+fc <- forecast(final_fit, h = h)
+
+open_device(sprintf("ARIMA Forecast (%d days ahead)", h))
+plot(fc, main=sprintf("ARIMA Forecast (%d days ahead)", h))
+
+# Back transform to PRICE scale
+fc_price <- exp(fc$mean)
+cat("\nFirst 10 forecasted PRICES:\n"); print(head(fc_price, 10))
+
+
+
+
+# -- By Jeff
+# 2) COMPREHENSIVE MODEL DIAGNOSTICS
+# ===========================================================================
+
+cat("\n=== COMPREHENSIVE MODEL DIAGNOSTICS ===\n")
+
+diagnose_model <- function(model, model_name, data) {
+  cat("\nDIAGNOSTICS FOR:", model_name, "\n")
+  cat("=", rep("=", nchar(model_name) + 15), "\n", sep="")
+  
+  # Parameter significance (guard var.coef)
+  coeffs <- tryCatch(coef(model), error = function(e) NULL)
+  vc <- tryCatch(model$var.coef, error = function(e) NULL)
+  
+  if (!is.null(coeffs)) {
+    if (!is.null(vc)) {
+      se <- sqrt(diag(vc))
+      t_stats <- coeffs / se
+      p_values <- 2 * (1 - pnorm(abs(t_stats)))
+      sig_table <- data.frame(
+        Parameter = names(coeffs),
+        Estimate = round(coeffs, 6),
+        Std.Error = round(se, 6),
+        t.value = round(t_stats, 4),
+        p.value = round(p_values, 4)
+      )
+    } else {
+      sig_table <- data.frame(
+        Parameter = names(coeffs),
+        Estimate = round(coeffs, 6),
+        Std.Error = NA_real_,
+        t.value = NA_real_,
+        p.value = NA_real_
+      )
+      p_values <- rep(NA_real_, length(coeffs))
+    }
+    cat("\nParameter Significance:\n")
+    print(sig_table)
+  } else {
+    cat("\n(No coefficients available)\n")
+    p_values <- numeric(0)
+  }
+  
+  # Residuals
+  residuals <- residuals(model)
+  
+  # Ljung-Box test
+  lb_test <- Box.test(residuals, lag = 20, type = "Ljung-Box")
+  cat("\nLjung-Box Test for Residual Autocorrelation:\n")
+  cat("  X-squared =", round(lb_test$statistic, 4), 
+      ", df =", lb_test$parameter, 
+      ", p-value =", round(lb_test$p.value, 4), "\n")
+  
+  # Normality (cap Shapiro to <= 5000 obs to avoid error)
+  n_res <- length(residuals)
+  n_sub <- min(5000, n_res)
+  sw <- shapiro.test(if (n_res > 5000) sample(residuals, n_sub) else residuals)
+  cat("\nNormality Tests on Residuals:\n")
+  cat("  Shapiro-Wilk Test: W =", 
+      round(sw$statistic, 4),
+      ", p-value =", round(sw$p.value, 4), "\n")
+  
+  # ARCH test
+  arch_test <- Box.test(residuals^2, lag = 10, type = "Ljung-Box")
+  cat("  ARCH Effect Test (on squared residuals): p-value =", 
+      round(arch_test$p.value, 4), "\n")
+  
+  # Residual statistics
+  cat("\nResidual Statistics:\n")
+  cat("  Mean:", round(mean(residuals), 6), "\n")
+  cat("  Standard Deviation:", round(sd(residuals), 6), "\n")
+  cat("  Skewness:", round(moments::skewness(residuals), 4), "\n")
+  cat("  Kurtosis:", round(moments::kurtosis(residuals), 4), "\n")
+  
+  # Plots
+  open_device(paste("Diagnostics:", model_name));
+  par(mfrow = c(2, 2))
+  plot(residuals, type = "l", main = paste("Residuals:", model_name),
+       ylab = "Residuals", col = "blue")
+  abline(h = 0, col = "red", lty = 2)
+  acf(residuals, main = paste("ACF of Residuals:", model_name), lag.max = 40)
+  qqnorm(residuals, main = paste("Q-Q Plot:", model_name))
+  qqline(residuals, col = "red")
+  hist(residuals, breaks = 30, prob = TRUE, 
+       main = paste("Residuals Distribution:", model_name),
+       xlab = "Residuals", col = "lightblue")
+  curve(dnorm(x, mean = mean(residuals), sd = sd(residuals)), 
+        add = TRUE, col = "red", lwd = 2)
+  par(mfrow = c(1, 1))
+  
+  return(list(
+    residuals = residuals,
+    significant_params = if (length(p_values)) sum(p_values < 0.05, na.rm = TRUE) else NA_integer_,
+    lb_pvalue = lb_test$p.value,
+    normality_pvalue = sw$p.value
+  ))
+}
+
+# Perform diagnostics on top 3 models
+top_models <- list(
+  list(model = fit_ar1, name = "AR(1)"),
+  list(model = fit_ma1, name = "MA(1)"), 
+  list(model = fit_arma11, name = "ARMA(1,1)")
+)
+
+diagnostic_results <- list()
+for (model_info in top_models) {
+  diagnostic_results[[model_info$name]] <- diagnose_model(
+    model_info$model, model_info$name, btc_log_returns
+  )
+}
+
+
+
+
+# ----- By Jeff
+# MODEL SELECTION AND FORECASTING
+# ===========================================================================
+
+# Select best model based on AIC and diagnostics
+best_model_idx <- which.min(model_comparison$AIC)
+final_model <- list(fit_ar1, fit_ar2, fit_ma1, fit_ma2, fit_arma11, fit_arma12, fit_arma21)[[best_model_idx]]
+best_model_name <- model_comparison$Model[best_model_idx]
+
+cat("\n=== FINAL MODEL SELECTION ===\n")
+cat("SELECTED MODEL:", best_model_name, "\n")
+cat("AIC:", AIC(final_model), "\n")
+cat("BIC:", BIC(final_model), "\n")
+cat("Log-Likelihood:", as.numeric(logLik(final_model)), "\n")  # FIX: logLik extraction
+
+# Final diagnostics for selected model
+cat("\n=== FINAL MODEL DIAGNOSTICS SUMMARY ===\n")
+final_diagnostics <- diagnose_model(final_model, paste("FINAL:", best_model_name), btc_log_returns)
+
+# Check if model passes basic diagnostic checks
+cat("\n=== MODEL VALIDATION CHECKS ===\n")
+cat("Residual Autocorrelation (Ljung-Box p > 0.05):", 
+    ifelse(final_diagnostics$lb_pvalue > 0.05, "PASS", "FAIL"), "\n")
+cat("Parameters Significant (p < 0.05):", 
+    final_diagnostics$significant_params, "out of", length(coef(final_model)), "\n")
+
+# Forecast log returns
+h <- 30
+fc_returns <- forecast(final_model, h = h)
+
+# Convert to price level forecasts
+last_log_price <- tail(btc_log_ts, 1)     # FIX: use btc_log_ts
+fc_log_returns <- fc_returns$mean
+fc_log_prices <- as.numeric(last_log_price) + cumsum(as.numeric(fc_log_returns))
+fc_prices <- exp(fc_log_prices)
+
+cat("\n=== PRICE FORECASTS ===\n")
+cat("First 10 forecasted prices:\n")
+print(head(round(fc_prices, 2), 10))
+
+cat("\n=== ANALYSIS COMPLETE ===\n")
