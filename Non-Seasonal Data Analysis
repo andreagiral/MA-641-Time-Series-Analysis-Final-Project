@@ -203,6 +203,10 @@ plot(fc, main=sprintf("ARIMA Forecast (%d days ahead)", h))
 fc_price <- exp(fc$mean)
 cat("\nFirst 10 forecasted PRICES:\n"); print(head(fc_price, 10))
 
+# -- By Jeff
+# 2) Parameter Estimation
+# ===========================================================================
+
 
 
 
